@@ -1,0 +1,3 @@
+data_root: data
+run_expectancy:
+  min_group_size: 25
