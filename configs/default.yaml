@@ -1,3 +1,8 @@
 data_root: data
 run_expectancy:
   min_group_size: 25
+research_windows:
+  train: {start: "2021-03-01", end: "2023-11-30"}
+  validation: {start: "2024-03-01", end: "2024-11-30"}
+  holdout: {start: "2025-03-01", end: "2025-11-30"}
+  scoring: {start: "2026-03-01", end: "2026-11-30"}

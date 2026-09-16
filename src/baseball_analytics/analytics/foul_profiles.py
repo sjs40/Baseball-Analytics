@@ -35,7 +35,7 @@ def batter_foul_profiles(pitches: pl.DataFrame) -> pl.DataFrame:
         repeated_two_strike_fouls=(pl.col("two_strike_foul_number") >= 2).sum(),
         total_fsv=pl.col("fsv").sum(),
         total_fave=pl.col("fave").sum() if "fave" in pitches.columns else pl.lit(0.0),
-        two_strike_fave=pl.when(pl.col("is_two_strike")).then(pl.col("fave")).otherwise(0.0).sum()
+        two_strike_fave=pl.when(pl.col("is_two_strike_foul")).then(pl.col("fave")).otherwise(0.0).sum()
         if "fave" in pitches.columns
         else pl.lit(0.0),
         average_spoil_difficulty=pl.col("spoil_difficulty").mean()
@@ -55,9 +55,9 @@ def batter_foul_profiles(pitches: pl.DataFrame) -> pl.DataFrame:
         fsv_per_100_two_strike_pitches=100
         * pl.col("total_fsv")
         / pl.col("two_strike_pitches").clip(lower_bound=1),
-        fave_per_100_opportunities=100
-        * pl.col("total_fave")
-        / pl.col("two_strike_pitches").clip(lower_bound=1),
+        fave_per_foul=pl.col("total_fave") / pl.col("fouls").clip(lower_bound=1),
+        two_strike_fave_per_two_strike_foul=pl.col("two_strike_fave")
+        / pl.col("two_strike_fouls").clip(lower_bound=1),
     )
 
 

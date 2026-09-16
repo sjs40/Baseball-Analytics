@@ -77,26 +77,29 @@ def compute_fsv(canonical: pl.DataFrame, re_table: pl.DataFrame, output_path: Pa
     return result
 
 
-def batter_fsv_leaderboard(
-    pitches: pl.DataFrame, batter_lookup: pl.DataFrame | None = None
-) -> pl.DataFrame:
-    if "batter" not in pitches.columns:
-        raise ValueError("Batter FSV leaderboard requires the Statcast batter identifier")
-    # Statcast's `player_name` is the pitcher. Never use it as batter metadata.
-    result = (
-        pitches.group_by("batter")
+def aggregate_fsv(pitches: pl.DataFrame, group: list[str]) -> pl.DataFrame:
+    """Canonical FSV aggregation; rates always use two-strike pitches."""
+    return (
+        pitches.group_by(group)
         .agg(
             fsv=pl.col("fsv").sum(),
+            two_strike_pitches=pl.col("is_two_strike").sum(),
             two_strike_fouls=pl.col("is_two_strike_foul").sum(),
             total_fouls=pl.col("is_foul").sum(),
             pitches=pl.len(),
         )
         .with_columns(
-            fsv_per_100_two_strike_pitches=100
-            * pl.col("fsv")
-            / pl.col("two_strike_fouls").clip(lower_bound=1)
+            fsv_per_100_two_strike_pitches=100 * pl.col("fsv")
+            / pl.col("two_strike_pitches").clip(lower_bound=1)
         )
     )
+
+
+def batter_fsv_leaderboard(pitches: pl.DataFrame, batter_lookup: pl.DataFrame | None = None) -> pl.DataFrame:
+    if "batter" not in pitches.columns:
+        raise ValueError("Batter FSV leaderboard requires the Statcast batter identifier")
+    # Statcast's `player_name` is the pitcher. Never use it as batter metadata.
+    result = aggregate_fsv(pitches, ["batter"])
     if batter_lookup is not None:
         result = result.join(batter_lookup.select("batter", "batter_name"), on="batter", how="left")
     return result.sort("fsv", descending=True)

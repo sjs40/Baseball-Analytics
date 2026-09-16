@@ -11,8 +11,14 @@ from baseball_analytics.data.statcast import ingest_statcast
 from baseball_analytics.data.validate import validate_canonical_pitches
 from baseball_analytics.evaluation.report import swing_validation_report
 from baseball_analytics.features.canonical import build_canonical_pitches
+from baseball_analytics.metrics.foul.fae import (
+    add_residuals,
+    batter_residual_leaderboard,
+    empirical_bayes_shrinkage,
+)
 from baseball_analytics.metrics.foul.fave import compute_fave
 from baseball_analytics.metrics.foul.fsv import batter_fsv_leaderboard, compute_fsv
+from baseball_analytics.models.oos import build_oos_prediction_ledger
 from baseball_analytics.models.run_expectancy import build_run_expectancy
 from baseball_analytics.models.swing_outcome import train_swing_outcome_baseline
 from baseball_analytics.paths import data_path
@@ -94,6 +100,26 @@ def compute_fave_command() -> None:
     model = pl.read_parquet(data_path("processed") / "swing_outcome_baseline.parquet")
     result = compute_fave(pitches, model, data_path("processed") / "pitch_fave.parquet")
     typer.echo(f"Calculated experimental FAVE for {result.height:,} pitches")
+
+
+@app.command("build-oos-ledger")
+def build_oos_ledger_command() -> None:
+    canonical = pl.read_parquet(data_path("interim") / "canonical_pitches.parquet")
+    result = build_oos_prediction_ledger(
+        canonical, data_path("processed") / "oos_swing_predictions.parquet", data_path("processed") / "models"
+    )
+    typer.echo(f"Built {result.height:,} chronological OOS swing predictions")
+
+
+@app.command("compute-fae")
+def compute_fae_command() -> None:
+    canonical = pl.read_parquet(data_path("interim") / "canonical_pitches.parquet")
+    ledger = pl.read_parquet(data_path("processed") / "oos_swing_predictions.parquet")
+    pitches = add_residuals(canonical, ledger)
+    pitches.write_parquet(data_path("processed") / "pitch_fae.parquet")
+    leaderboard = empirical_bayes_shrinkage(batter_residual_leaderboard(pitches))
+    leaderboard.write_parquet(data_path("processed") / "batter_fae_leaderboard.parquet")
+    typer.echo(f"Calculated OOS residual metrics for {leaderboard.height:,} batters")
 
 
 @app.command("build-foul-profiles")

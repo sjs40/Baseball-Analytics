@@ -17,7 +17,7 @@ else:
     metric = st.selectbox("Metric", list(METRICS))
     seasons = frame.get_column("game_year").drop_nulls().unique().sort().to_list()
     season = st.selectbox(
-        "Season", [None, *seasons], format_func=lambda value: "All" if value is None else value
+        "Season", [None, *seasons], format_func=lambda value: "All" if value is None else str(value)
     )
     pitch_types = frame.get_column("pitch_type").drop_nulls().unique().sort().to_list()
     pitch_type = st.selectbox(
@@ -30,8 +30,14 @@ else:
         "Attack zone", [None, *zones], format_func=lambda value: "All" if value is None else value
     )
     lookup = pl.read_parquet(lookup_path) if lookup_path.exists() else None
+    leaderboard = foul_leaderboard(frame, metric, minimum, lookup, season, pitch_type, zone)
+    if "batter_name" not in leaderboard.columns or leaderboard.get_column("batter_name").null_count():
+        st.warning("Batter names are unavailable. Run `baseball build-player-map` and rebuild profiles.")
+    display_columns = ["batter_name"] + [
+        column for column in leaderboard.columns if column not in {"batter", "batter_name"}
+    ]
     st.dataframe(
-        foul_leaderboard(frame, metric, minimum, lookup, season, pitch_type, zone).to_pandas(),
+        leaderboard.select(display_columns).to_pandas(),
         use_container_width=True,
         hide_index=True,
     )

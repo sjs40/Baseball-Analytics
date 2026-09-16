@@ -5,7 +5,7 @@ from pathlib import Path
 import polars as pl
 
 STATE_COLUMNS = ["outs_when_up", "on_1b", "on_2b", "on_3b", "balls", "strikes"]
-RE_VERSION = "0.2-count-aware-hierarchical"
+RE_VERSION = "0.3-terminal-score-aware"
 
 
 def add_state_ids(frame: pl.DataFrame) -> pl.DataFrame:
@@ -28,7 +28,16 @@ def add_state_ids(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def build_run_expectancy(canonical: pl.DataFrame, output_path: Path) -> pl.DataFrame:
+def build_run_expectancy(
+    canonical: pl.DataFrame, output_path: Path, train_end: str | None = None
+) -> pl.DataFrame:
+    """Fit RE from an explicit reference window.
+
+    ``bat_score`` is the pre-pitch batting score; whenever Statcast supplies a
+    post-pitch score, the final non-null value in the half inning is the
+    authoritative terminal score.  Older/source-incomplete rows deliberately
+    fall back to the largest observed pre-pitch score and advertise that fact.
+    """
     missing = set(STATE_COLUMNS + ["game_pk", "inning", "inning_topbot", "bat_score"]) - set(
         canonical.columns
     )
@@ -36,19 +45,43 @@ def build_run_expectancy(canonical: pl.DataFrame, output_path: Path) -> pl.DataF
         raise ValueError(f"Cannot build run expectancy; missing columns: {sorted(missing)}")
     if canonical.filter((pl.col("balls") > 3) | (pl.col("strikes") > 2)).height:
         raise ValueError("Impossible count in canonical pitches")
+    if train_end is not None:
+        if "game_date" not in canonical.columns:
+            raise ValueError("Chronological RE fitting requires game_date")
+        canonical = canonical.filter(pl.col("game_date") <= train_end)
+    if canonical.is_empty():
+        raise ValueError("No pitches remain in the requested RE reference window")
     half = ["game_pk", "inning", "inning_topbot"]
+    terminal_score = pl.col("bat_score").max().over(half)
+    score_source = pl.lit("pre_pitch_max_fallback")
+    if "post_bat_score" in canonical.columns:
+        terminal_score = pl.coalesce(
+            pl.col("post_bat_score").drop_nulls().last().over(half), terminal_score
+        )
+        score_source = pl.when(pl.col("post_bat_score").drop_nulls().count().over(half) > 0).then(
+            pl.lit("final_post_bat_score")
+        ).otherwise(pl.lit("pre_pitch_max_fallback"))
     table = (
         canonical.with_columns(
-            runs_to_end=(pl.col("bat_score").max().over(half) - pl.col("bat_score")).clip(
-                lower_bound=0
-            )
+            runs_to_end=(terminal_score - pl.col("bat_score")).clip(lower_bound=0),
+            re_score_source=score_source,
         )
         .filter(pl.col("outs_when_up") < 3)
         .group_by(STATE_COLUMNS)
-        .agg(expected_runs=pl.col("runs_to_end").mean(), observations=pl.len())
+        .agg(
+            expected_runs=pl.col("runs_to_end").mean(),
+            observations=pl.len(),
+            score_source=pl.col("re_score_source").mode().first(),
+        )
         .sort(STATE_COLUMNS)
     )
-    table = add_state_ids(table).with_columns(re_version=pl.lit(RE_VERSION))
+    dates = canonical.get_column("game_date") if "game_date" in canonical.columns else None
+    table = add_state_ids(table).with_columns(
+        re_version=pl.lit(RE_VERSION),
+        reference_start=pl.lit(str(dates.min()) if dates is not None else None, dtype=pl.String),
+        reference_end=pl.lit(str(dates.max()) if dates is not None else None, dtype=pl.String),
+        train_end=pl.lit(train_end, dtype=pl.String),
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     table.write_parquet(output_path)
     return table

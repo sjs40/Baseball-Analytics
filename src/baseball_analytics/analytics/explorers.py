@@ -3,6 +3,34 @@
 import polars as pl
 
 
+def game_display_options(pitches: pl.DataFrame) -> pl.DataFrame:
+    """One display label per game; preserves game identifiers only for filtering."""
+    required = {"game_pk", "game_date", "away_team", "home_team"}
+    missing = required - set(pitches.columns)
+    if missing:
+        raise ValueError(f"Game display requires columns: {sorted(missing)}")
+    return (
+        pitches.group_by("game_pk")
+        .agg(
+            game_date=pl.col("game_date").first(),
+            away_team=pl.col("away_team").first(),
+            home_team=pl.col("home_team").first(),
+        )
+        .with_columns(
+            game_label=pl.concat_str(
+                [
+                    pl.col("game_date").cast(pl.String),
+                    pl.col("away_team"),
+                    pl.lit("at"),
+                    pl.col("home_team"),
+                ],
+                separator=" ",
+            )
+        )
+        .sort(["game_date", "away_team", "home_team"])
+    )
+
+
 def filter_leaderboard(
     leaderboard: pl.DataFrame, minimum_opportunities: int = 0, metric: str = "fsv"
 ) -> pl.DataFrame:

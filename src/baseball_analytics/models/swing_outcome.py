@@ -5,7 +5,7 @@ from pathlib import Path
 
 import polars as pl
 
-MODEL_VERSION = "0.1-empirical-count-attack-zone"
+MODEL_VERSION = "0.2-smoothed-empirical-count-attack-zone"
 TARGETS = ["whiff", "foul", "ball_in_play"]
 FEATURES = ["balls", "strikes", "attack_zone"]
 
@@ -22,9 +22,15 @@ def _eligible_swings(pitches: pl.DataFrame) -> pl.DataFrame:
 
 
 def train_swing_outcome_baseline(
-    pitches: pl.DataFrame, output_path: Path, train_end: date | None = None
+    pitches: pl.DataFrame, output_path: Path, train_end: date | None = None, alpha: float = 20.0
 ) -> pl.DataFrame:
-    """Fit empirical probabilities using only rows on/before ``train_end``."""
+    """Fit Model B with prior-weighted multinomial smoothing.
+
+    Each count×attack-zone cell has all three classes and probabilities sum to
+    one: ``(n_cell,k + alpha * P_global,k) / (n_cell + alpha)``.
+    """
+    if alpha < 0:
+        raise ValueError("alpha must be non-negative")
     swings = _eligible_swings(pitches)
     if train_end is not None:
         if "game_date" not in swings.columns:
@@ -37,7 +43,7 @@ def train_swing_outcome_baseline(
         swings = swings.filter(pl.col("game_date") <= cutoff)
     if swings.is_empty():
         raise ValueError("No swings remain in the requested training period")
-    table = (
+    observed = (
         swings.group_by(FEATURES + ["swing_outcome"])
         .agg(
             observations=pl.len(),
@@ -45,9 +51,24 @@ def train_swing_outcome_baseline(
             if "delta_run_exp" in swings.columns
             else pl.lit(None, dtype=pl.Float64),
         )
+    )
+    globals_ = swings.group_by("swing_outcome").agg(global_observations=pl.len())
+    total_global = swings.height
+    global_grid = pl.DataFrame({"swing_outcome": TARGETS}).join(globals_, on="swing_outcome", how="left")
+    global_grid = global_grid.with_columns(
+        global_observations=pl.col("global_observations").fill_null(0),
+        global_probability=pl.col("global_observations").fill_null(0) / total_global,
+    )
+    cells = swings.select(FEATURES).unique()
+    table = (
+        cells.join(global_grid, how="cross")
+        .join(observed, on=FEATURES + ["swing_outcome"], how="left")
         .with_columns(
-            total=pl.col("observations").sum().over(FEATURES),
-            probability=pl.col("observations") / pl.col("observations").sum().over(FEATURES),
+            observations=pl.col("observations").fill_null(0),
+            total=pl.col("observations").fill_null(0).sum().over(FEATURES),
+            probability=(pl.col("observations").fill_null(0) + alpha * pl.col("global_probability"))
+            / (pl.col("observations").fill_null(0).sum().over(FEATURES) + alpha),
+            smoothing_alpha=pl.lit(alpha),
             model_version=pl.lit(MODEL_VERSION),
             train_end=pl.lit(train_end.isoformat() if train_end else None, dtype=pl.String),
         )
@@ -59,15 +80,10 @@ def train_swing_outcome_baseline(
 
 def predict_swing_outcomes(pitches: pl.DataFrame, model: pl.DataFrame) -> pl.DataFrame:
     """Attach probabilities and BIP delta-RE fallback values to every pitch."""
-    present_targets = set(model.get_column("swing_outcome").unique().to_list())
     probabilities = model.pivot(
         on="swing_outcome", index=FEATURES, values="probability", aggregate_function="first"
     ).rename(
-        {
-            target: f"expected_{target}_probability"
-            for target in TARGETS
-            if target in present_targets
-        }
+        {target: f"expected_{target}_probability" for target in TARGETS}
     )
     bip_values = model.filter(pl.col("swing_outcome") == "ball_in_play").select(
         FEATURES + [pl.col("mean_delta_run_exp").alias("expected_bip_delta_re")]
@@ -84,7 +100,8 @@ def predict_swing_outcomes(pitches: pl.DataFrame, model: pl.DataFrame) -> pl.Dat
         .select(pl.col("mean_delta_run_exp").mean())
         .item()
     )
-    return result.with_columns(
+    bip_fallback = 0.0 if bip_fallback is None else bip_fallback
+    result = result.with_columns(
         *[
             pl.col(f"expected_{target}_probability")
             .fill_null(fallback.get(target, 0.0))
@@ -94,3 +111,8 @@ def predict_swing_outcomes(pitches: pl.DataFrame, model: pl.DataFrame) -> pl.Dat
         pl.col("expected_bip_delta_re").fill_null(bip_fallback).alias("expected_bip_delta_re"),
         model_version=pl.lit(MODEL_VERSION),
     )
+    probability_columns = [f"expected_{target}_probability" for target in TARGETS]
+    sums = result.select(sum(pl.col(column) for column in probability_columns).alias("sum"))
+    if sums.filter((pl.col("sum") - 1.0).abs() > 1e-9).height:
+        raise AssertionError("Swing outcome probabilities must sum to one")
+    return result
