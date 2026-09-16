@@ -1,3 +1,3 @@
-# PEST status
+# PEST status — deferred
 
-PEST is not calculated in V0.1. The repository first establishes data, state-value, and neutral FSV foundations. FAVE and WEAR are explicitly deferred until their models and validations exist.
+PEST and PEST+ are not calculated in v0.2. The repository provides only reusable pre-pitch workload features; it does not model pitcher exit, bullpen replacement, cross-game bullpen exhaustion, catcher effects, or postseason variants. FAVE is now experimental; WEAR remains deferred pending a separately validated workload model.
